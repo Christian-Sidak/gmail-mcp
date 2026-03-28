@@ -112,7 +112,7 @@ pnpm i && pnpm build
 
 | Variable                 | Description                                             | Required?                       | Default                              |
 |--------------------------|---------------------------------------------------------|---------------------------------|--------------------------------------|
-| `AUTH_SERVER_PORT`       | Port for the temporary OAuth authentication server      | No                              | `3000`                               |
+| `AUTH_SERVER_PORT`       | Port for the temporary OAuth authentication server      | No                              | `3456`                               |
 | `CLIENT_ID`              | Google API client ID (found in `GMAIL_OAUTH_PATH`)      | Yes if remote server connection | `''`                                 |
 | `CLIENT_SECRET`          | Google API client secret (found in `GMAIL_OAUTH_PATH`)  | Yes if remote server connection | `''`                                 |
 | `GMAIL_CREDENTIALS_PATH` | Path to the user credentials file                       | No                              | `MCP_CONFIG_DIR/credentials.json`    |
