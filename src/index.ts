@@ -249,12 +249,6 @@ const getThreadHeaders = (thread: Thread) => {
   return headers
 }
 
-const wrapTextBody = (text: string): string => text.split('\n').map(line => {
-  if (line.length <= 76) return line
-  const chunks = line.match(/.{1,76}/g) || []
-  return chunks.join('=\n')
-}).join('\n')
-
 const sanitizeHeader = (value: string): string => value.replace(/[\r\n]/g, '')
 
 const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) => {
