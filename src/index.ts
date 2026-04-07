@@ -255,6 +255,8 @@ const wrapTextBody = (text: string): string => text.split('\n').map(line => {
   return chunks.join('=\n')
 }).join('\n')
 
+const sanitizeHeader = (value: string): string => value.replace(/[\r\n]/g, '')
+
 const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) => {
   let thread: Thread | null = null
   if (params.threadId) {
@@ -264,13 +266,13 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   }
 
   const headers: string[] = []
-  if (params.to?.length) headers.push(`To: ${params.to.join(', ')}`)
-  if (params.cc?.length) headers.push(`Cc: ${params.cc.join(', ')}`)
-  if (params.bcc?.length) headers.push(`Bcc: ${params.bcc.join(', ')}`)
+  if (params.to?.length) headers.push(`To: ${params.to.map(sanitizeHeader).join(', ')}`)
+  if (params.cc?.length) headers.push(`Cc: ${params.cc.map(sanitizeHeader).join(', ')}`)
+  if (params.bcc?.length) headers.push(`Bcc: ${params.bcc.map(sanitizeHeader).join(', ')}`)
   if (thread) {
     headers.push(...getThreadHeaders(thread))
   } else if (params.subject) {
-    headers.push(`Subject: ${params.subject}`)
+    headers.push(`Subject: ${sanitizeHeader(params.subject)}`)
   } else {
     headers.push('Subject: (No Subject)')
   }
@@ -303,14 +305,14 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
       '',
       `--${boundary}`,
       'Content-Type: text/plain; charset="UTF-8"',
-      'Content-Transfer-Encoding: quoted-printable',
+      'Content-Transfer-Encoding: base64',
       '',
-      wrapTextBody(plainBody),
+      Buffer.from(plainBody, 'utf-8').toString('base64'),
       `--${boundary}`,
       'Content-Type: text/html; charset="UTF-8"',
-      'Content-Transfer-Encoding: quoted-printable',
+      'Content-Transfer-Encoding: base64',
       '',
-      wrapTextBody(htmlBody),
+      Buffer.from(htmlBody, 'utf-8').toString('base64'),
       `--${boundary}--`
     ]
 
@@ -318,12 +320,12 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
   } else {
     // Non-thread messages remain text/plain for simplicity
     headers.push('Content-Type: text/plain; charset="UTF-8"')
-    headers.push('Content-Transfer-Encoding: quoted-printable')
+    headers.push('Content-Transfer-Encoding: base64')
 
     const message = [
       ...headers,
       '',
-      wrapTextBody(bodyText)
+      Buffer.from(bodyText, 'utf-8').toString('base64')
     ]
 
     return Buffer.from(message.join('\r\n')).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
