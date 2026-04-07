@@ -316,7 +316,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
       `--${boundary}--`
     ]
 
-    return Buffer.from(message.join('\r\n')).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    return Buffer.from(message.join('\r\n')).toString('base64url')
   } else {
     // Non-thread messages remain text/plain for simplicity
     headers.push('Content-Type: text/plain; charset="UTF-8"')
@@ -328,7 +328,7 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
       Buffer.from(bodyText, 'utf-8').toString('base64')
     ]
 
-    return Buffer.from(message.join('\r\n')).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    return Buffer.from(message.join('\r\n')).toString('base64url')
   }
 }
 
