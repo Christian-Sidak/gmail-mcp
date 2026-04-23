@@ -5,6 +5,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createStatefulServer } from "@smithery/sdk/server/stateful.js"
 import { z } from "zod"
 import { google, gmail_v1 } from 'googleapis'
+import crypto from "crypto"
 import fs from "fs"
 import { createOAuth2Client, launchAuthServer, validateCredentials } from "./oauth2.js"
 import { MCP_CONFIG_DIR, PORT, TELEMETRY_ENABLED } from "./config.js"
@@ -117,6 +118,34 @@ const getNestedHistory = (messagePart: MessagePart, level = 1): string => {
   return (messagePart.parts || []).map(p => getNestedHistory(p, level + 1)).filter(p => p).join('\n')
 }
 
+const getNestedHistoryHtml = (messagePart: MessagePart): string => {
+  if (messagePart.mimeType === 'text/html' && messagePart.body?.data) {
+    const { data } = decodedBody(messagePart.body)
+    return data || ''
+  }
+
+  if (messagePart.mimeType === 'text/plain' && messagePart.body?.data) {
+    const { data } = decodedBody(messagePart.body)
+    if (!data) return ''
+    return data.split('\n').map(line => escapeHtml(line)).join('<br>')
+  }
+
+  // Prefer text/html part if available
+  const htmlPart = (messagePart.parts || []).find(p => p.mimeType === 'text/html')
+  if (htmlPart) return getNestedHistoryHtml(htmlPart)
+
+  return (messagePart.parts || []).map(p => getNestedHistoryHtml(p)).filter(p => p).join('')
+}
+
+const escapeHtml = (text: string): string => {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
 const findHeader = (headers: MessagePartHeader[] | undefined, name: string) => {
   if (!headers || !Array.isArray(headers) || !name) return undefined
   return headers.find(h => h?.name?.toLowerCase() === name.toLowerCase())?.value ?? undefined
@@ -161,6 +190,35 @@ const getQuotedContent = (thread: Thread) => {
   return quotedContent.join('\n')
 }
 
+const getQuotedContentHtml = (thread: Thread): string => {
+  if (!thread.messages?.length) return ''
+
+  const sentMessages = thread.messages.filter(msg =>
+    msg.labelIds?.includes('SENT') ||
+    (!msg.labelIds?.includes('DRAFT') && findHeader(msg.payload?.headers || [], 'date'))
+  )
+
+  if (!sentMessages.length) return ''
+
+  const lastMessage = sentMessages[sentMessages.length - 1]
+  if (!lastMessage?.payload) return ''
+
+  let attrHtml = ''
+  if (lastMessage.payload.headers) {
+    const fromHeader = findHeader(lastMessage.payload.headers || [], 'from')
+    const dateHeader = findHeader(lastMessage.payload.headers || [], 'date')
+    if (fromHeader && dateHeader) {
+      attrHtml = `<div dir="ltr" class="gmail_attr">On ${escapeHtml(dateHeader)}, ${escapeHtml(fromHeader)} wrote:<br></div>`
+    }
+  }
+
+  const quotedHtml = getNestedHistoryHtml(lastMessage.payload)
+
+  if (!attrHtml && !quotedHtml) return ''
+
+  return `<br><div class="gmail_quote gmail_quote_container">${attrHtml}<blockquote class="gmail_quote" style="margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex">${quotedHtml}</blockquote></div>`
+}
+
 const getThreadHeaders = (thread: Thread) => {
   let headers: string[] = []
 
@@ -191,11 +249,7 @@ const getThreadHeaders = (thread: Thread) => {
   return headers
 }
 
-const wrapTextBody = (text: string): string => text.split('\n').map(line => {
-  if (line.length <= 76) return line
-  const chunks = line.match(/.{1,76}/g) || []
-  return chunks.join('=\n')
-}).join('\n')
+const sanitizeHeader = (value: string): string => value.replace(/[\r\n]/g, '')
 
 const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) => {
   let thread: Thread | null = null
@@ -205,33 +259,71 @@ const constructRawMessage = async (gmail: gmail_v1.Gmail, params: NewMessage) =>
     thread = data
   }
 
-  const message = []
-  if (params.to?.length) message.push(`To: ${wrapTextBody(params.to.join(', '))}`)
-  if (params.cc?.length) message.push(`Cc: ${wrapTextBody(params.cc.join(', '))}`)
-  if (params.bcc?.length) message.push(`Bcc: ${wrapTextBody(params.bcc.join(', '))}`)
+  const headers: string[] = []
+  if (params.to?.length) headers.push(`To: ${params.to.map(sanitizeHeader).join(', ')}`)
+  if (params.cc?.length) headers.push(`Cc: ${params.cc.map(sanitizeHeader).join(', ')}`)
+  if (params.bcc?.length) headers.push(`Bcc: ${params.bcc.map(sanitizeHeader).join(', ')}`)
   if (thread) {
-    message.push(...getThreadHeaders(thread).map(header => wrapTextBody(header)))
+    headers.push(...getThreadHeaders(thread))
   } else if (params.subject) {
-    message.push(`Subject: ${wrapTextBody(params.subject)}`)
+    headers.push(`Subject: ${sanitizeHeader(params.subject)}`)
   } else {
-    message.push('Subject: (No Subject)')
+    headers.push('Subject: (No Subject)')
   }
-  message.push('Content-Type: text/plain; charset="UTF-8"')
-  message.push('Content-Transfer-Encoding: quoted-printable')
-  message.push('MIME-Version: 1.0')
-  message.push('')
+  headers.push('MIME-Version: 1.0')
 
-  if (params.body) message.push(wrapTextBody(params.body))
+  const bodyText = params.body || ''
+  const isThreadReply = !!thread
 
-  if (thread) {
-    const quotedContent = getQuotedContent(thread)
+  if (isThreadReply) {
+    // Thread replies use multipart/alternative (text/plain + text/html) to match native Gmail
+    const boundary = `----=_Part_${crypto.randomBytes(16).toString('hex')}`
+    headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`)
+
+    // Build text/plain part with > quoting
+    let plainBody = bodyText
+    const quotedContent = getQuotedContent(thread!)
     if (quotedContent) {
-      message.push('')
-      message.push(wrapTextBody(quotedContent))
+      plainBody += '\r\n\r\n' + quotedContent
     }
-  }
 
-  return Buffer.from(message.join('\r\n')).toString('base64url').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    // Build text/html part with Gmail-style blockquote
+    let htmlBody = `<div dir="ltr">${escapeHtml(bodyText).replace(/\n/g, '<br>')}</div>`
+    const quotedHtml = getQuotedContentHtml(thread!)
+    if (quotedHtml) {
+      htmlBody += quotedHtml
+    }
+
+    const message = [
+      ...headers,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain; charset="UTF-8"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      Buffer.from(plainBody, 'utf-8').toString('base64'),
+      `--${boundary}`,
+      'Content-Type: text/html; charset="UTF-8"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      Buffer.from(htmlBody, 'utf-8').toString('base64'),
+      `--${boundary}--`
+    ]
+
+    return Buffer.from(message.join('\r\n')).toString('base64url')
+  } else {
+    // Non-thread messages remain text/plain for simplicity
+    headers.push('Content-Type: text/plain; charset="UTF-8"')
+    headers.push('Content-Transfer-Encoding: base64')
+
+    const message = [
+      ...headers,
+      '',
+      Buffer.from(bodyText, 'utf-8').toString('base64')
+    ]
+
+    return Buffer.from(message.join('\r\n')).toString('base64url')
+  }
 }
 
 function getConfig(config: any) {
